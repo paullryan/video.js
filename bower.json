@@ -6,6 +6,7 @@
     "dist/video-js/video.js",
     "dist/video-js/video-js.css"
   ],
+  "ignore": [],
   "keywords": [
     "videojs",
     "html5",
