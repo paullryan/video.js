@@ -58,6 +58,25 @@ vjs.Player = vjs.Component.extend({
     // see enableTouchActivity in Component
     options.reportTouchActivity = false;
 
+    // Make sure the event listeners are the first things to happen when
+    // the player is ready. See #1208
+    // If not, the tech might fire events before the listeners are attached.
+    this.ready(function(){
+      this.on('loadstart', this.onLoadStart);
+      this.on('waiting', this.onWaiting);
+      this.on('seeked', this.onWaitEnd);
+      this.on('canplay', this.onWaitEnd);
+      this.on('canplaythrough', this.onWaitEnd);
+      this.on('playing', this.onWaitEnd);
+      this.on('ended', this.onEnded);
+      this.on('play', this.onPlay);
+      this.on('firstplay', this.onFirstPlay);
+      this.on('pause', this.onPause);
+      this.on('progress', this.onProgress);
+      this.on('durationchange', this.onDurationChange);
+      this.on('fullscreenchange', this.onFullscreenChange);
+    });
+
     // Run base component initializing with new options.
     // Builds the element through createEl()
     // Inits and embeds any child components in opts
@@ -216,22 +235,6 @@ vjs.Player.prototype.createEl = function(){
   }
   vjs.insertFirst(tag, el); // Breaks iPhone, fixed in HTML5 setup.
 
-  // The event listeners need to be added before the children are added
-  // in the component init because the tech (loaded with mediaLoader) may
-  // fire events, like loadstart, that these events need to capture.
-  // Long term it might be better to expose a way to do this in component.init
-  // like component.initEventListeners() that runs between el creation and
-  // adding children
-  this.el_ = el;
-  this.on('loadstart', this.onLoadStart);
-  this.on('ended', this.onEnded);
-  this.on('play', this.onPlay);
-  this.on('firstplay', this.onFirstPlay);
-  this.on('pause', this.onPause);
-  this.on('progress', this.onProgress);
-  this.on('durationchange', this.onDurationChange);
-  this.on('fullscreenchange', this.onFullscreenChange);
-
   return el;
 };
 
@@ -290,13 +293,12 @@ vjs.Player.prototype.loadTech = function(techName, source){
 
 vjs.Player.prototype.unloadTech = function(){
   this.isReady_ = false;
+  this.tech.dispose();
 
   // Turn off any manual progress or timeupdate tracking
   if (this.manualProgress) { this.manualProgressOff(); }
 
   if (this.manualTimeUpdates) { this.manualTimeUpdatesOff(); }
-
-  this.tech.dispose();
 
   this.tech = false;
 };
@@ -411,44 +413,30 @@ vjs.Player.prototype.stopTrackingCurrentTime = function(){
  * @event loadstart
  */
 vjs.Player.prototype.onLoadStart = function() {
-  // TODO: Update to use `emptied` event instead. See #1277.
+  // remove any first play listeners that weren't triggered from a previous video.
+  this.off('play', initFirstPlay);
+  this.one('play', initFirstPlay);
 
-  // reset the error state
-  this.error(null);
-
-  // If it's already playing we want to trigger a firstplay event now.
-  // The firstplay event relies on both the play and loadstart events
-  // which can happen in any order for a new source
-  if (!this.paused()) {
-    this.trigger('firstplay');
-  } else {
-    // reset the hasStarted state
-    this.hasStarted(false);
-    this.one('play', function(){
-      this.hasStarted(true);
-    });
+  if (this.error()) {
+    this.error(null);
   }
+
+  vjs.removeClass(this.el_, 'vjs-has-started');
 };
 
-vjs.Player.prototype.hasStarted_ = false;
+ // Need to create this outside the scope of onLoadStart so it
+ // can be added and removed (to avoid piling first play listeners).
+function initFirstPlay(e) {
+  var fpEvent = { type: 'firstplay', target: this.el_ };
+  // Using vjs.trigger so we can check if default was prevented
+  var keepGoing = vjs.trigger(this.el_, fpEvent);
 
-vjs.Player.prototype.hasStarted = function(hasStarted){
-  if (hasStarted !== undefined) {
-    // only update if this is a new value
-    if (this.hasStarted_ !== hasStarted) {
-      this.hasStarted_ = hasStarted;
-      if (hasStarted) {
-        this.addClass('vjs-has-started');
-        // trigger the firstplay event if this newly has played
-        this.trigger('firstplay');
-      } else {
-        this.removeClass('vjs-has-started');
-      }
-    }
-    return this;
+  if (!keepGoing) {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
   }
-  return this.hasStarted_;
-};
+}
 
 /**
  * Fired when the player has initial duration and dimension information
@@ -474,8 +462,18 @@ vjs.Player.prototype.onLoadedAllData;
  */
 vjs.Player.prototype.onPlay = function(){
   vjs.removeClass(this.el_, 'vjs-paused');
+  vjs.removeClass(this.el_, 'vjs-waiting');
   vjs.addClass(this.el_, 'vjs-playing');
 };
+
+vjs.Player.prototype.onWaiting = function(){
+  vjs.addClass(this.el_, 'vjs-waiting');
+};
+
+vjs.Player.prototype.onWaitEnd = function(){
+  vjs.removeClass(this.el_, 'vjs-waiting');
+};
+
 
 /**
  * Fired the first time a video is played
@@ -923,12 +921,12 @@ vjs.Player.prototype.requestFullscreen = function(){
     // when cancelling fullscreen. Otherwise if there's multiple
     // players on a page, they would all be reacting to the same fullscreen
     // events
-    vjs.on(document, fsApi['fullscreenchange'], vjs.bind(this, function(e){
+    vjs.on(document, fsApi.fullscreenchange, vjs.bind(this, function(e){
       this.isFullscreen(document[fsApi.fullscreenElement]);
 
       // If cancelling fullscreen, remove event listener.
       if (this.isFullscreen() === false) {
-        vjs.off(document, fsApi['fullscreenchange'], arguments.callee);
+        vjs.off(document, fsApi.fullscreenchange, arguments.callee);
       }
 
       this.trigger('fullscreenchange');
@@ -1104,7 +1102,7 @@ vjs.Player.prototype.src = function(source){
   }
 
   // Case: Array of source objects to choose from and pick the best to play
-  if (vjs.obj.isArray(source)) {
+  if (source instanceof Array) {
 
     var sourceTech = this.selectSource(source),
         techName;
