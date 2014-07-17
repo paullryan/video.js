@@ -1,4 +1,5 @@
 .DS_Store
+dist/*
 build/files/*
 docs/api/*
 dev.html
